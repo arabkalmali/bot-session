@@ -1,0 +1,154 @@
+#!/usr/bin/env python3
+
+import argparse
+import sys
+import re
+from collections import Counter
+from typing import Iterable, List, Tuple
+
+
+def iterate_lines_from_paths(paths: List[str], encoding: str) -> Iterable[str]:
+    if not paths:
+        for line in sys.stdin:
+            yield line
+    else:
+        for path in paths:
+            with open(path, "r", encoding=encoding, errors="replace") as file_handle:
+                for line in file_handle:
+                    yield line
+
+
+def normalize_line(line: str, trim: bool, ignore_case: bool, collapse_ws: bool) -> str:
+    normalized = line
+    if trim:
+        normalized = normalized.strip()
+    if collapse_ws:
+        normalized = re.sub(r"\s+", " ", normalized)
+    if ignore_case:
+        normalized = normalized.casefold()
+    return normalized
+
+
+def main() -> None:
+    parser = argparse.ArgumentParser(
+        description="Remove duplicate lines from text while optionally preserving order."
+    )
+    parser.add_argument(
+        "files",
+        nargs="*",
+        help="Input file(s). If omitted, reads from standard input.",
+    )
+    parser.add_argument(
+        "-o",
+        "--output",
+        help="Output file path. Defaults to standard output.",
+    )
+    parser.add_argument(
+        "-i",
+        "--ignore-case",
+        action="store_true",
+        help="Ignore case when comparing lines.",
+    )
+    parser.add_argument(
+        "-t",
+        "--trim",
+        action="store_true",
+        help="Trim leading/trailing whitespace before comparing.",
+    )
+    parser.add_argument(
+        "--collapse-ws",
+        action="store_true",
+        help="Collapse consecutive whitespace to a single space before comparing.",
+    )
+    parser.add_argument(
+        "--keep",
+        choices=["first", "last"],
+        default="first",
+        help="Keep the first or last occurrence of a duplicate (default: first).",
+    )
+    parser.add_argument(
+        "--count",
+        action="store_true",
+        help="Prefix each output line with its total occurrence count.",
+    )
+    parser.add_argument(
+        "--sort",
+        action="store_true",
+        help="Sort unique lines by the comparison key (disables input order preservation).",
+    )
+    parser.add_argument(
+        "--encoding",
+        default="utf-8",
+        help="Text encoding for input/output files (default: utf-8).",
+    )
+
+    args = parser.parse_args()
+
+    output_handle = (
+        open(args.output, "w", encoding="utf-8") if args.output else sys.stdout
+    )
+
+    try:
+        # Fast streaming path when keeping first, without sort or count
+        if args.keep == "first" and not args.sort and not args.count:
+            seen_keys = set()
+            for line in iterate_lines_from_paths(args.files, args.encoding):
+                key = normalize_line(
+                    line=line,
+                    trim=args.trim,
+                    ignore_case=args.ignore_case,
+                    collapse_ws=args.collapse_ws,
+                )
+                if key not in seen_keys:
+                    seen_keys.add(key)
+                    output_handle.write(line)
+            return
+
+        # Otherwise, we need to collect all lines
+        lines: List[str] = list(
+            iterate_lines_from_paths(args.files, args.encoding)
+        )
+        keys: List[str] = [
+            normalize_line(
+                line=l,
+                trim=args.trim,
+                ignore_case=args.ignore_case,
+                collapse_ws=args.collapse_ws,
+            )
+            for l in lines
+        ]
+
+        # Determine which index to keep per unique key
+        key_to_index = {}
+        if args.keep == "first":
+            for index, key in enumerate(keys):
+                if key not in key_to_index:
+                    key_to_index[key] = index
+        else:  # keep last
+            for index, key in enumerate(keys):
+                key_to_index[key] = index
+
+        unique_items: List[Tuple[int, str, str]] = [
+            (idx, lines[idx], keys[idx]) for (key, idx) in key_to_index.items()
+        ]
+
+        if args.sort:
+            unique_items.sort(key=lambda item: item[2])  # sort by key
+        else:
+            unique_items.sort(key=lambda item: item[0])  # sort by original index
+
+        if args.count:
+            counts = Counter(keys)
+            for _, line, key in unique_items:
+                output_handle.write(f"{counts[key]:>7} {line}")
+        else:
+            for _, line, _ in unique_items:
+                output_handle.write(line)
+
+    finally:
+        if output_handle is not sys.stdout:
+            output_handle.close()
+
+
+if __name__ == "__main__":
+    main()
